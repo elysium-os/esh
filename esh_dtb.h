@@ -55,6 +55,8 @@ void eshd_prop_pair(eshd_dtb *dtb, eshd_prop prop, eshd_string *name, eshd_bytes
 eshd_string eshd_prop_name(eshd_dtb *dtb, eshd_prop prop);
 eshd_bytes eshd_prop_value(eshd_dtb *dtb, eshd_prop prop);
 
+bool eshd_find_next_compatible(eshd_dtb *dtb, eshd_node current, const char *str, eshd_node *next);
+
 bool eshd_find_prop(eshd_dtb *dtb, eshd_node node, const char *name, eshd_prop *prop);
 bool eshd_find_child(eshd_dtb *dtb, eshd_node parent, const char *name, eshd_node *child);
 
@@ -62,6 +64,7 @@ bool eshd_bytes_extract_u32(eshd_bytes bytes, size_t index, uint32_t *value);
 
 bool eshd_string_eq(eshd_string string, const char *str);
 bool eshd_bytes_eq_str(eshd_bytes bytes, const char *str);
+int eshd_bytes_eq_str_index(eshd_bytes bytes, size_t string_index, const char *str);
 
 #ifdef ESH_DTB_IMPL
 
@@ -327,6 +330,25 @@ eshd_node eshd_root(eshd_dtb *dtb) {
     }
 }
 
+bool eshd_next(eshd_dtb *dtb, eshd_node current, eshd_node *node) {
+    size_t offset = current.offset;
+
+    eshd_structs_read_node_begin(dtb, &offset, nullptr);
+
+    while(true) {
+        switch(eshd_structs_read_32(dtb, offset)) {
+            case TOKEN_BEGIN_NODE: node->offset = offset; return true;
+            case TOKEN_PROP:
+                offset += 4;
+                eshd_structs_read_property_data(dtb, &offset, nullptr, nullptr);
+                break;
+            case TOKEN_END_NODE:
+            case TOKEN_NOP:      offset += 4; break;
+            case TOKEN_END:      return false;
+        }
+    }
+}
+
 bool eshd_first_child(eshd_dtb *dtb, eshd_node parent, eshd_node *node) {
     size_t offset = parent.offset;
 
@@ -473,11 +495,44 @@ bool eshd_find_child(eshd_dtb *dtb, eshd_node parent, const char *name, eshd_nod
     return false;
 }
 
+bool eshd_find_next_compatible(eshd_dtb *dtb, eshd_node current, const char *str, eshd_node *node) {
+    while(eshd_next(dtb, current, &current)) {
+        eshd_prop compatible_prop;
+        if(!eshd_find_prop(dtb, current, "compatible", &compatible_prop)) continue;
+
+        eshd_bytes compatible_bytes = eshd_prop_value(dtb, compatible_prop);
+        for(int i = 0, res = 0; res != -1; i++) {
+            res = eshd_bytes_eq_str_index(compatible_bytes, i, str);
+            if(res == 0) continue;
+
+            *node = current;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool eshd_bytes_extract_u32(eshd_bytes bytes, size_t index, uint32_t *value) {
     if((index + 1) * 4 > bytes.length) return false;
     const uint32_t *values = bytes.ptr;
     *value = MSB_TO_HOST_32(values[index]);
     return true;
+}
+
+bool eshd_bytes_str_offset(eshd_bytes bytes, size_t index, size_t *offset) {
+    const uint8_t *str = bytes.ptr;
+    size_t current = 0;
+    for(size_t i = 0; i < bytes.length; i++) {
+        if(current == index) {
+            *offset = i;
+            return true;
+        }
+
+        if(str[i] == '\0') current++;
+    }
+
+    return false;
 }
 
 bool eshd_string_eq(eshd_string string, const char *str) {
@@ -496,6 +551,17 @@ bool eshd_bytes_eq_str(eshd_bytes bytes, const char *str) {
     if(str_length == 0) return true;
 
     return eshd_strncmp(bytes.ptr, str, str_length) == 0;
+}
+
+int eshd_bytes_eq_str_index(eshd_bytes bytes, size_t string_index, const char *str) {
+    size_t offset;
+    if(eshd_bytes_str_offset(bytes, string_index, &offset)) return -1;
+
+    size_t str_length = eshd_strlen(str);
+    if(bytes.length - offset != str_length + 1) return 0;
+    if(str_length == 0) return 1;
+
+    return (eshd_strncmp(bytes.ptr + offset, str, str_length) == 0) ? 1 : 0;
 }
 
 
