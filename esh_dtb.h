@@ -49,6 +49,9 @@ bool eshd_next_sibling(eshd_dtb *dtb, eshd_node sibling, eshd_node *node);
 bool eshd_first_prop(eshd_dtb *dtb, eshd_node node, eshd_prop *prop);
 bool eshd_next_prop(eshd_dtb *dtb, eshd_prop prop, eshd_prop *next);
 
+// NOTE: must walk the tree from the root twice to find the parent, expensive
+bool eshd_parent(eshd_dtb *dtb, eshd_node child, eshd_node *node);
+
 eshd_string eshd_node_name(eshd_dtb *dtb, eshd_node node);
 
 void eshd_prop_pair(eshd_dtb *dtb, eshd_prop prop, eshd_string *name, eshd_bytes *data);
@@ -178,6 +181,22 @@ static void eshd_structs_read_prop(eshd_dtb *dtb, size_t *offset, eshd_string *n
     *offset += 4;
 
     eshd_structs_read_property_data(dtb, offset, name, bytes);
+}
+
+static uint32_t eshd_structs_skip_token(eshd_dtb *dtb, size_t *offset) {
+    uint32_t token = eshd_structs_read_32(dtb, *offset);
+    *offset += 4;
+
+    switch(token) {
+        case TOKEN_BEGIN_NODE: eshd_structs_read_string(dtb, offset, nullptr); break;
+        case TOKEN_PROP:       eshd_structs_read_property_data(dtb, offset, nullptr, nullptr); break;
+        case TOKEN_END_NODE:
+        case TOKEN_NOP:
+        case TOKEN_END:        break;
+        default:               ESH_ASSERT(false); break;
+    }
+
+    return token;
 }
 
 static int eshd_strncmp(const char *lhs, const char *rhs, size_t size) {
@@ -433,6 +452,38 @@ bool eshd_next_prop(eshd_dtb *dtb, eshd_prop prop, eshd_prop *next) {
             default:               ESH_ASSERT(false);
         }
     }
+}
+
+bool eshd_parent(eshd_dtb *dtb, eshd_node child, eshd_node *node) {
+    size_t level = 0;
+    for(size_t offset = 0; offset < child.offset;) {
+        switch(eshd_structs_skip_token(dtb, &offset)) {
+            case TOKEN_BEGIN_NODE: level++; break;
+            case TOKEN_END_NODE:   level--; break;
+            case TOKEN_END:        return false;
+            default:               break;
+        }
+    }
+
+    if(level == 0) return false;
+
+    size_t current_level = 0;
+    size_t parent_offset = 0;
+    for(size_t offset = 0; offset < child.offset;) {
+        size_t token_offset = offset;
+        switch(eshd_structs_skip_token(dtb, &offset)) {
+            case TOKEN_BEGIN_NODE:
+                current_level++;
+                if(current_level == level) parent_offset = token_offset;
+                break;
+            case TOKEN_END_NODE: current_level--; break;
+            case TOKEN_END:      return false;
+            default:             break;
+        }
+    }
+
+    node->offset = parent_offset;
+    return true;
 }
 
 // ========== DATA ACCESSORS ==========
